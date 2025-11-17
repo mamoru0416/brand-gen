@@ -1,0 +1,13 @@
+# .gitignore
+
+# 仮想環境
+venv/
+
+# Streamlitのシークレット
+.streamlit/secrets.toml
+
+# macOS
+.DS_Store
+
+# Pythonキャッシュ
+__pycache__/
