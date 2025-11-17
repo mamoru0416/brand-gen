@@ -184,8 +184,6 @@ with tab3:
         
         st.divider()
         
-        # --- 修正 (ここから) ---
-        
         # 履歴読み込み済 (上書き) か、新規作成か
         is_update = st.session_state.saved_story_id is not None
         button_label = "この内容で上書き保存する" if is_update else "この内容で新規保存する"
@@ -230,7 +228,7 @@ with tab3:
             
             # (↓ QRコード表示ロジックは変更なし)
             # 【F-004: QRコード発行機能】
-            app_url = "http://localhost:8501" 
+            app_url = "https://brand-gen-ejztgk9pxefnatl8jyk4tr.streamlit.app/" 
             final_url = f"{app_url}/?story_id={story_id}"
             
             st.info(f"QRコードが指すURL (↓):\n{final_url}")
