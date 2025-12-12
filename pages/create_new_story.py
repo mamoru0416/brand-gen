@@ -11,8 +11,14 @@ import json
 #  APIキー設定 (Gemini)
 # -----------------------------------------------------------------
 try:
+    # 通信方式は rest のままでOK
     genai.configure(api_key=st.secrets["GOOGLE_API_KEY"], transport='rest')
-    model = genai.GenerativeModel('gemini-2.5-pro') 
+
+    # --- 修正前 ---
+    # model = genai.GenerativeModel('gemini-1.5-pro')
+
+    # --- 修正後 (制限が緩い flash モデルに変更) ---
+    model = genai.GenerativeModel('gemini-2.5-flash')
 except Exception as e:
     st.error("Google AI APIキーが設定されていません。st.secretsを確認してください。")
     st.stop()
