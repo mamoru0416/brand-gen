@@ -6,6 +6,7 @@ import qrcode
 from io import BytesIO
 import database  # 作成した database.py をインポート
 import json
+import re
 
 # -----------------------------------------------------------------
 #  APIキー設定 (Gemini)
@@ -228,38 +229,59 @@ with tab2:
             history_text = "\n".join([f"{m['role']}: {m['content']}" for m in st.session_state.messages])
             full_prompt = storyteller_prompt.format(chat_history=history_text)
 
-            with st.spinner("AIがストーリーを執筆中です..."):
-                response = model.generate_content(full_prompt)
-                raw_story_text = response.text
-                
-                # [タイトル]と[本文]でパースする
+            with st.spinner("プロのストーリーテラーが執筆中です（構成検討〜執筆まで行います）..."):
                 try:
-                    title = raw_story_text.split("[タイトル]")[1].split("[本文]")[0].strip()
-                    body = raw_story_text.split("[本文]")[1].strip()
+                    response = model.generate_content(full_prompt)
+                    raw_story_text = response.text
                     
-                    st.session_state.final_story_title = title
-                    st.session_state.final_story_body = body
-                    # 保存用の履歴 (JSON文字列)
-                    st.session_state.chat_history_json = json.dumps(st.session_state.messages)
+                    # 2. 新しいパース処理 (正規表現を使用)
+                    # 解説:
+                    #  r'##\s*(.*?)\n(.*?)---'
+                    #  - ## で始まる行をタイトルとして取得
+                    #  - その後の改行以降を本文として取得
+                    #  - "---" が出てくるまで（または文章の終わりまで）を本文とする
+                    #  - re.DOTALL オプションで、改行またぎのマッチを許可する
                     
-                    st.success("ストーリーが生成されました！")
-                    
-                    # --- 修正 (ここから) ---
-                    
-                    # 以前のコード (バグの原因)
-                    # st.session_state.saved_story_id = None # 生成し直したら保存IDをリセット
-                    
-                    # 修正後のコード
-                    # 新規作成（履歴読み込みではない）の場合のみ、IDをリセットします
-                    if "messages_loaded" not in st.session_state:
-                        st.session_state.saved_story_id = None 
-                    
-                    # --- 修正 (ここまで) ---
+                    match = re.search(r'##\s*(.*?)\n(.*?)(?:\n---|# Metacognition|$)', raw_text=raw_story_text, flags=re.DOTALL)
 
-                except IndexError:
-                    st.error("AIの出力形式が予期したものではありませんでした。再試行してください。")
-                    st.session_state.final_story_title = ""
-                    st.session_state.final_story_body = raw_story_text # 生データ
+                    # 万が一単純な検索で失敗した場合のバックアップロジック
+                    if not match:
+                         # ## が見つからない場合、全体から探す簡易的な処理
+                         match = re.search(r'##\s*(.*?)\n(.*)', raw_story_text, re.DOTALL)
+
+                    if match:
+                        title = match.group(1).strip()
+                        body = match.group(2).strip()
+                        
+                        # Markdownの太字などを除去（念のため）
+                        title = title.replace("**", "")
+                        
+                        st.session_state.final_story_title = title
+                        st.session_state.final_story_body = body
+                        st.session_state.chat_history_json = json.dumps(st.session_state.messages)
+                        
+                        st.success("ストーリーが生成されました！")
+                        
+                        # 思考プロセス（分析結果など）もデバッグ用に見れるようにする（任意）
+                        with st.expander("AIの思考プロセス・分析結果を見る"):
+                            st.text(raw_story_text)
+
+                        if "messages_loaded" not in st.session_state:
+                            st.session_state.saved_story_id = None 
+                    else:
+                        raise IndexError("フォーマット不一致")
+
+                except (IndexError, AttributeError):
+                    st.error("AIの出力形式を解析できませんでした。")
+                    st.warning("▼ 生成された生データ:")
+                    st.code(raw_story_text) 
+                    
+                    # エラー時は生データをそのまま保存できるようにする
+                    st.session_state.final_story_title = "タイトル自動取得失敗"
+                    st.session_state.final_story_body = raw_story_text
+
+                except Exception as e:
+                    st.error(f"ストーリー生成中にエラーが発生しました。\n詳細: {e}")
 
     if st.session_state.final_story_body:
         st.subheader("生成されたストーリー（確認用）")
