@@ -1,4 +1,4 @@
-# pages/1_新しいストーリーを作成.py (ストーリー生成ページ)
+# pages/create_new_story.py (修正版)
 
 import streamlit as st
 import google.generativeai as genai
@@ -15,14 +15,11 @@ try:
     # 通信方式は rest のままでOK
     genai.configure(api_key=st.secrets["GOOGLE_API_KEY"], transport='rest')
 
-    # --- 修正前 ---
-    # model = genai.GenerativeModel('gemini-1.5-pro')
-
-    # --- 修正後 (制限が緩い flash モデルに変更) ---
     model = genai.GenerativeModel('gemini-2.5-flash')
 except Exception as e:
     st.error("Google AI APIキーが設定されていません。st.secretsを確認してください。")
     st.stop()
+
 params = st.query_params
 if "resume_id" in params and "messages_loaded" not in st.session_state:
     resume_id = params["resume_id"]
@@ -84,7 +81,6 @@ with tab1:
     st.markdown("生産物への「こだわり」や「情熱」をAIに話してみてください。")
 
     # 1. チャット履歴の表示
-    # (再読み込み後は、ここに含まれるようになります)
     for msg in st.session_state.messages:
         st.chat_message(msg["role"]).write(msg["content"])
 
@@ -93,7 +89,7 @@ with tab1:
         # A. ユーザーの入力をまずは履歴に追加
         st.session_state.messages.append({"role": "user", "content": prompt})
         
-        # B. 画面上でユーザーの入力を一時的に表示 (UX向上のため)
+        # B. 画面上でユーザーの入力を一時的に表示
         st.chat_message("user").write(prompt)
 
         # C. プロンプト作成とAI生成
@@ -110,6 +106,10 @@ with tab1:
             - **質問の仕方**: 一度に複数の質問をしない。必ず「一問一答」形式で、会話のキャッチボールを行う。
             - **進行管理**: ユーザーが答えに詰まったら、具体的な例を出して誘導する。
             - **終了条件**: 必要な情報（商品、こだわり、ターゲット、想い）が揃ったと判断したら、会話を終了し、これまでの内容を要約して確認する。
+            
+            【重要な禁止事項】
+            回答には見出し記号（# や ## など）を使用しないでください。
+            常に通常のテキストサイズで応答してください。
 
             # Workflow (Chain of Thought)
             ステップバイステップで、以下の手順に従って対話を進めてください。
@@ -150,16 +150,19 @@ with tab1:
         full_prompt = interviewer_prompt.format(chat_history=history_text)
 
         with st.spinner("AIが応答を考えています..."):
-            response = model.generate_content(full_prompt)
-            ai_response = response.text
-        
-        # D. AIの回答を履歴に追加
-        st.session_state.messages.append({"role": "assistant", "content": ai_response})
-        
-        # E. 画面を再読み込み (ここが重要！)
-        # これにより、スクリプトが最初から再実行され、
-        # AIの回答が「履歴」の一部として入力欄の上に表示されます。
-        st.rerun()
+            # 【修正3】チャットにもエラーハンドリング(try-except)を追加
+            try:
+                response = model.generate_content(full_prompt)
+                ai_response = response.text
+                
+                # D. AIの回答を履歴に追加
+                st.session_state.messages.append({"role": "assistant", "content": ai_response})
+                
+                # E. 画面を再読み込み
+                st.rerun()
+                
+            except Exception as e:
+                st.error(f"AIとの通信でエラーが発生しました。しばらく待ってから再試行してください。\n詳細: {e}")
 
 # --- タブ2: ストーリー生成 (F-002) ---
 with tab2:
@@ -169,7 +172,7 @@ with tab2:
         st.warning("まず「ステップ1: AIヒアリング」でAIと対話してください。")
     else:
         if st.button("このヒアリング内容からストーリーを生成する"):
-            # プロンプトを修正 (パースしやすい形式に)
+            # プロンプト (変更なし)
             storyteller_prompt = """
                 # Role
                 あなたは、心を揺さぶる文章を書く「トップブランド・ストーリーテラー」です。
@@ -234,19 +237,11 @@ with tab2:
                     response = model.generate_content(full_prompt)
                     raw_story_text = response.text
                     
-                    # 2. 新しいパース処理 (正規表現を使用)
-                    # 解説:
-                    #  r'##\s*(.*?)\n(.*?)---'
-                    #  - ## で始まる行をタイトルとして取得
-                    #  - その後の改行以降を本文として取得
-                    #  - "---" が出てくるまで（または文章の終わりまで）を本文とする
-                    #  - re.DOTALL オプションで、改行またぎのマッチを許可する
-                    
-                    match = re.search(r'##\s*(.*?)\n(.*?)(?:\n---|# Metacognition|$)', raw_text=raw_story_text, flags=re.DOTALL)
+                    # 【修正2】正規表現の引数 raw_text= を削除し、変数名のみにする
+                    match = re.search(r'##\s*(.*?)\n(.*?)(?:\n---|# Metacognition|$)', raw_story_text, flags=re.DOTALL)
 
                     # 万が一単純な検索で失敗した場合のバックアップロジック
                     if not match:
-                         # ## が見つからない場合、全体から探す簡易的な処理
                          match = re.search(r'##\s*(.*?)\n(.*)', raw_story_text, re.DOTALL)
 
                     if match:
@@ -338,8 +333,6 @@ with tab3:
                 else:
                     st.error("新規保存に失敗しました。")
 
-        # --- 修正 (ここまで) ---
-
         # 保存が成功したらQRコードを表示
         if st.session_state.saved_story_id:
             story_id = st.session_state.saved_story_id
@@ -359,4 +352,3 @@ with tab3:
             buf = BytesIO()
             img.save(buf, format="PNG")
             st.image(buf)
-    
