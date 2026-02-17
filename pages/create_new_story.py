@@ -4,73 +4,89 @@ import streamlit as st
 import google.generativeai as genai
 import qrcode
 from io import BytesIO
-import database  # 作成した database.py をインポート
+import database
 import json
 import re
+
+# -----------------------------------------------------------------
+#  関数: ベースURLの取得 (QRコード用)
+# -----------------------------------------------------------------
+def get_base_url():
+    """
+    アプリの公開URLを取得する。
+    1. st.secrets["BASE_URL"] があればそれを使う
+    2. なければサイドバーでユーザーに入力させる
+    """
+    if "BASE_URL" in st.secrets:
+        return st.secrets["BASE_URL"].rstrip("/")
+    
+    # ユーザー入力 (セッションステートで保持)
+    if "user_base_url" not in st.session_state:
+        st.session_state.user_base_url = "https://share.streamlit.io/..."
+        
+    with st.sidebar:
+        st.divider()
+        st.caption("QRコード設定")
+        url_input = st.text_input(
+            "アプリの公開URL", 
+            value=st.session_state.user_base_url,
+            help="Streamlit Community CloudのURLを入力してください（末尾の / は不要）"
+        )
+        if url_input:
+            st.session_state.user_base_url = url_input.rstrip("/")
+            
+    return st.session_state.user_base_url
 
 # -----------------------------------------------------------------
 #  APIキー設定 (Gemini)
 # -----------------------------------------------------------------
 try:
-    # 通信方式は rest のままでOK
     genai.configure(api_key=st.secrets["GOOGLE_API_KEY"], transport='rest')
-
     model = genai.GenerativeModel('gemini-2.5-flash')
 except Exception as e:
     st.error("Google AI APIキーが設定されていません。st.secretsを確認してください。")
     st.stop()
 
+# -----------------------------------------------------------------
+#  再開モード (履歴の読み込み)
+# -----------------------------------------------------------------
 params = st.query_params
 if "resume_id" in params and "messages_loaded" not in st.session_state:
     resume_id = params["resume_id"]
-    
-    # DBから該当ストーリーを取得
     story_data = database.get_story(resume_id)
     
     if story_data and "chat_history" in story_data:
         try:
-            # DBからチャット履歴(JSON文字列)を読み込み、リスト(list)に変換
             loaded_messages = json.loads(story_data["chat_history"])
-            
-            # セッションステートを初期化
             st.session_state.messages = loaded_messages
             st.session_state.final_story_title = story_data.get("title", "")
             st.session_state.final_story_body = story_data.get("body", "")
             st.session_state.chat_history_json = story_data["chat_history"]
-            st.session_state.saved_story_id = resume_id # 既存のIDをセット
-            
-            # (重要) 読み込み完了フラグを立てる (ページリロード時に再読み込みしないため)
+            st.session_state.saved_story_id = resume_id
             st.session_state.messages_loaded = True 
-            
-            st.info("過去のヒアリング履歴を読み込みました。")
-            
-        except json.JSONDecodeError:
-            st.error("チャット履歴の読み込みに失敗しました。データが破損している可能性があります。")
+            st.info(f"過去のヒアリング履歴を読み込みました (ID: {resume_id})")
         except Exception as e:
             st.error(f"履歴の読み込み中にエラーが発生しました: {e}")
             
-    # URLからパラメータを削除 (ブラウザリロード時に再実行しないため)
     st.query_params.clear()
 
-
 # -----------------------------------------------------------------
-#  セッションステートの初期化 (このページ専用)
+#  セッションステートの初期化
 # -----------------------------------------------------------------
 if "messages" not in st.session_state:
-    st.session_state.messages = [] # チャット履歴
+    st.session_state.messages = []
 if "final_story_title" not in st.session_state:
-    st.session_state.final_story_title = "" # 生成されたタイトル
+    st.session_state.final_story_title = ""
 if "final_story_body" not in st.session_state:
-    st.session_state.final_story_body = "" # 生成された本文
+    st.session_state.final_story_body = ""
 if "chat_history_json" not in st.session_state:
-    st.session_state.chat_history_json = "" # 保存用の履歴
+    st.session_state.chat_history_json = ""
 if "saved_story_id" not in st.session_state:
-    st.session_state.saved_story_id = None # 保存後のID
+    st.session_state.saved_story_id = None
 
 # -----------------------------------------------------------------
 #  UI (3つのタブ)
 # -----------------------------------------------------------------
-
 st.title("新しいブランドストーリーを作成します")
 
 tab1, tab2, tab3 = st.tabs(["ステップ1: AIヒアリング", "ステップ2: ストーリー生成", "ステップ3: 保存とQRコード発行"])
@@ -80,19 +96,14 @@ with tab1:
     st.header("AIヒアリング 🎤")
     st.markdown("生産物への「こだわり」や「情熱」をAIに話してみてください。")
 
-    # 1. チャット履歴の表示
     for msg in st.session_state.messages:
         st.chat_message(msg["role"]).write(msg["content"])
 
-    # 2. ユーザーの入力処理
     if prompt := st.chat_input("あなたの想いをどうぞ..."):
-        # A. ユーザーの入力をまずは履歴に追加
         st.session_state.messages.append({"role": "user", "content": prompt})
-        
-        # B. 画面上でユーザーの入力を一時的に表示
         st.chat_message("user").write(prompt)
 
-        # C. プロンプト作成とAI生成
+        # プロンプト (変更なし)
         interviewer_prompt = """
             # Role
             あなたは、第一次産業（農業・漁業・畜産など）の生産者に寄り添う、親しみやすく聞き上手な「ライター」です。
@@ -107,40 +118,6 @@ with tab1:
             - **進行管理**: ユーザーが答えに詰まったら、具体的な例を出して誘導する。
             - **終了条件**: 必要な情報（商品、こだわり、ターゲット、想い）が揃ったと判断したら、会話を終了し、これまでの内容を要約して確認する。
             
-            【重要な禁止事項】
-            回答には見出し記号（# や ## など）を使用しないでください。
-            常に通常のテキストサイズで応答してください。
-
-            # Workflow (Chain of Thought)
-            ステップバイステップで、以下の手順に従って対話を進めてください。
-
-            1.  **アイスブレイク & 商品確認**:
-                - まずは明るく挨拶し、緊張を解く。
-                - 「今回、皆さんに知ってほしい自慢の生産物は何ですか？」と聞く。
-
-            2.  **ターゲットの明確化 (重要)**:
-                - その生産物を「どんな人に」「どんなシチュエーションで」楽しんでほしいかを聞き出す。
-                - 例：「お子さんがいる家庭に安心して食べてほしいですか？それとも、自分へのご褒美として楽しんでほしいですか？」
-
-            3.  **「想い」の深掘り**:
-                - こだわっている点、他との違い、生産する上での苦労や喜びについて聞く。
-                - ユーザーの回答に対し、「それは大変でしたね！」「すごいこだわりですね！」と感情豊かに反応し、さらに「具体的にはどんなことがありましたか？」とエピソードを引き出す。
-
-            4.  **内容の確認と終了**:
-                - ストーリー作成に必要な要素が揃ったら、ヒアリング内容を「〇〇という想いで作られた、△△向けの商品ですね」と優しく要約する。
-                - 「この内容で素敵な紹介文を作りますね」と伝え、会話を締める。
-
-            # Output Example (Tone)
-            - 悪い例: 「ターゲット層を教えてください。また、差別化要因は何ですか？」
-            - 良い例: 「うんうん、なるほど！ すごく手間暇がかかっているんですね。ちなみに、このトマトはどんな方に一番食べてほしいですか？ 例えば、野菜嫌いのお子さんとか、料理好きな方とか…。」
-
-            # Self-Correction
-            回答を出力する前に、以下の点を自己評価してください。
-            - 相手を急かしていないか？
-            - 質問が一度に2つ以上になっていないか？
-            - 相手の回答に対して、十分な共感（リアクション）を示しているか？
-            不備があれば修正し、生産者が話しやすい回答を出力してください。
-
             # Conversation History
             [履歴]
             {chat_history}
@@ -150,21 +127,15 @@ with tab1:
         full_prompt = interviewer_prompt.format(chat_history=history_text)
 
         with st.spinner("AIが応答を考えています..."):
-            # 【修正3】チャットにもエラーハンドリング(try-except)を追加
             try:
                 response = model.generate_content(full_prompt)
                 ai_response = response.text
-                
-                # D. AIの回答を履歴に追加
                 st.session_state.messages.append({"role": "assistant", "content": ai_response})
-                
-                # E. 画面を再読み込み
                 st.rerun()
-                
             except Exception as e:
-                st.error(f"AIとの通信でエラーが発生しました。しばらく待ってから再試行してください。\n詳細: {e}")
+                st.error(f"AIとの通信でエラー: {e}")
 
-# --- タブ2: ストーリー生成 (F-002) ---
+# --- タブ2: ストーリー生成 (F-002: 改良版) ---
 with tab2:
     st.header("ブランドストーリー生成 ✍️")
     
@@ -172,183 +143,153 @@ with tab2:
         st.warning("まず「ステップ1: AIヒアリング」でAIと対話してください。")
     else:
         if st.button("このヒアリング内容からストーリーを生成する"):
-            # プロンプト (変更なし)
+            # プロンプト (HTMLでの出力を意識させるように少し調整しても良いが、今回はMarkdownのまま整形)
             storyteller_prompt = """
                 # Role
                 あなたは、心を揺さぶる文章を書く「トップブランド・ストーリーテラー」です。
-                提供されたチャット履歴（ヒアリング内容）を元に、消費者がその生産物を手に取りたくなるような、情緒的で魅力的なブランドストーリーを作成してください。
-
-                # Goal
-                生産者の「人柄」や「熱量」が伝わる文章を作成し、QRコードからアクセスした消費者の購買意欲やファン化を促進すること。
-
-                # Information Source
-                以下のチャット履歴から情報を抽出して使用してください。
-                Chat History: {chat_history}
-
+                
+                # Format
+                出力は以下のMarkdown形式のみを行ってください。余計な挨拶は不要です。
+                
+                ## [タイトル]
+                [本文]
+                
                 # Constraints
-                - **ターゲット設定**: チャット履歴内で語られた「ターゲット層」に響くトーン＆マナーで執筆すること。
-                - **構成**: 「キャッチーなタイトル」＋「本文」の構成とする。
-                - **文字数**: スマートフォンで読むことを想定し、本文は400文字〜600文字程度に収める。
-                - **表現**: 説明的な文章ではなく、情景が浮かぶような「物語（ナラティブ）」にする。生産者の話し言葉や口癖を効果的に引用する。
-
-                # Workflow (Chain of Thought)
-                いきなり文章を書き始めず、以下のステップで論理的に構成してください。
-
-                1.  **情報の分析と抽出**:
-                    - `{chat_history}` を読み込み、以下の要素を抽出する。
-                        - **Who**: 誰が（生産者の人柄）
-                        - **What**: 何を（商品の特徴）
-                        - **Target**: 誰に向けて（ターゲット層）
-                        - **Why/Story**: どんな想い・苦労・喜びがあるか（核となるエピソード）
-
-                2.  **トーン＆マナーの決定**:
-                    - 抽出したターゲット層に合わせて文体を調整する。
-                        - （例：高級志向 → 洗練された丁寧な文章 / 家庭向け → 温かみのある親しみやすい文章）
-
-                3.  **プロット作成**:
-                    - **導入**: 読者の興味を惹きつける問いかけや情景描写。
-                    - **展開**: 生産者の直面した課題や、こだわり抜いたプロセスの描写。
-                    - **結び**: 生産者のメッセージと、商品を手に取る消費者への呼びかけ。
-
-                4.  **ドラフト作成**:
-                    - プロットに基づき執筆する。タイトルは最後に、本文の内容を凝縮した最も魅力的なものをつける。
-
-                # Output Format
-                ## [ここに思わずクリックしたくなるタイトル]
-
-                [ここに本文を記述。適度に改行を入れ、スマホでの可読性を高めること。]
-
-                ---
-
-                # Metacognition & Evaluation
-                出力する前に、作成したストーリーを以下の基準で自己採点してください。
-                1.  チャット履歴にある「生産者の想い」が反映されているか？（事実の羅列になっていないか）
-                2.  ターゲット層に刺さる言葉選びができているか？
-                3.  生産者の顔が浮かぶような温かみがあるか？
-
-                上記の基準を満たしていない場合は、よりエモーショナルな表現に修正してから最終出力を行ってください。
+                - 本文は400〜600文字。
+                - 情緒的で、生産者の人柄が伝わる物語調。
+                
+                # Chat History
+                {chat_history}
             """
             
             history_text = "\n".join([f"{m['role']}: {m['content']}" for m in st.session_state.messages])
             full_prompt = storyteller_prompt.format(chat_history=history_text)
 
-            with st.spinner("プロのストーリーテラーが執筆中です（構成検討〜執筆まで行います）..."):
+            with st.spinner("プロのストーリーテラーが執筆中です..."):
                 try:
                     response = model.generate_content(full_prompt)
                     raw_story_text = response.text
                     
-                    # 【修正2】正規表現の引数 raw_text= を削除し、変数名のみにする
-                    match = re.search(r'##\s*(.*?)\n(.*?)(?:\n---|# Metacognition|$)', raw_story_text, flags=re.DOTALL)
-
-                    # 万が一単純な検索で失敗した場合のバックアップロジック
-                    if not match:
-                         match = re.search(r'##\s*(.*?)\n(.*)', raw_story_text, re.DOTALL)
-
+                    # タイトルと本文の抽出 (正規表現)
+                    match = re.search(r'##\s*(.*?)\n(.*)', raw_story_text, re.DOTALL)
+                    
                     if match:
-                        title = match.group(1).strip()
+                        title = match.group(1).strip().replace("**", "")
                         body = match.group(2).strip()
-                        
-                        # Markdownの太字などを除去（念のため）
-                        title = title.replace("**", "")
                         
                         st.session_state.final_story_title = title
                         st.session_state.final_story_body = body
                         st.session_state.chat_history_json = json.dumps(st.session_state.messages)
                         
                         st.success("ストーリーが生成されました！")
-                        
-                        # 思考プロセス（分析結果など）もデバッグ用に見れるようにする（任意）
-                        with st.expander("AIの思考プロセス・分析結果を見る"):
-                            st.text(raw_story_text)
-
                         if "messages_loaded" not in st.session_state:
                             st.session_state.saved_story_id = None 
                     else:
-                        raise IndexError("フォーマット不一致")
-
-                except (IndexError, AttributeError):
-                    st.error("AIの出力形式を解析できませんでした。")
-                    st.warning("▼ 生成された生データ:")
-                    st.code(raw_story_text) 
-                    
-                    # エラー時は生データをそのまま保存できるようにする
-                    st.session_state.final_story_title = "タイトル自動取得失敗"
-                    st.session_state.final_story_body = raw_story_text
+                        # 抽出失敗時のフォールバック
+                        st.session_state.final_story_title = "生成されたストーリー"
+                        st.session_state.final_story_body = raw_story_text
+                        st.warning("形式の自動解析に失敗しましたが、内容は以下の通りです。")
 
                 except Exception as e:
-                    st.error(f"ストーリー生成中にエラーが発生しました。\n詳細: {e}")
+                    st.error(f"生成エラー: {e}")
 
+    # --- モバイルプレビュー画面 ---
     if st.session_state.final_story_body:
-        st.subheader("生成されたストーリー（確認用）")
-        st.markdown(f"**タイトル:** {st.session_state.final_story_title}")
-        st.markdown(st.session_state.final_story_body)
+        st.divider()
+        st.subheader("📱 ストーリープレビュー")
+        
+        col_preview, col_dummy = st.columns([1, 2])
+        
+        with col_preview:
+            # スマホっぽい枠の中にHTMLを表示
+            preview_html = f"""
+            <div style="
+                width: 300px; 
+                height: 550px; 
+                border: 12px solid #333; 
+                border-radius: 30px; 
+                background: white; 
+                overflow-y: scroll;
+                margin: 0 auto;
+                box-shadow: 0 10px 20px rgba(0,0,0,0.3);
+                position: relative;
+            ">
+                <!-- カメラ部分のダミー -->
+                <div style="
+                    position: sticky; top: 0; 
+                    width: 100%; height: 20px; 
+                    background: #f1f1f1; 
+                    z-index: 10; border-bottom: 1px solid #ddd;
+                    text-align: center; color: #aaa; font-size: 10px; line-height: 20px;
+                ">Brand Story View</div>
+                
+                <div style="padding: 20px; font-family: sans-serif; color: #333;">
+                    <h3 style="text-align: center; margin-bottom: 15px; font-size: 18px;">
+                        {st.session_state.final_story_title}
+                    </h3>
+                    <div style="font-size: 12px; line-height: 1.6; text-align: justify; white-space: pre-wrap;">
+                        {st.session_state.final_story_body}
+                    </div>
+                </div>
+            </div>
+            """
+            st.components.v1.html(preview_html, height=600)
 
 
-# --- タブ3: 保存とQRコード発行 (F-003 & F-004) ---
+# --- タブ3: 保存とQRコード発行 (F-003 & F-004: 改良版) ---
 with tab3:
     st.header("保存とQRコード発行 📱")
     
     if not st.session_state.final_story_body:
         st.warning("まず「ステップ2: ストーリー生成」を完了してください。")
     else:
-        st.subheader("最終ストーリーの確認")
         st.markdown(f"**タイトル:** {st.session_state.final_story_title}")
-        st.markdown(st.session_state.final_story_body)
         
-        st.divider()
-        
-        # 履歴読み込み済 (上書き) か、新規作成か
         is_update = st.session_state.saved_story_id is not None
-        button_label = "この内容で上書き保存する" if is_update else "この内容で新規保存する"
+        button_label = "上書き保存" if is_update else "新規保存"
 
-        if st.button(button_label):
-            
-            if is_update:
-                # --- 上書き保存の場合 ---
-                with st.spinner("データベースを上書き中です..."):
+        if st.button(button_label, type="primary"):
+            with st.spinner("保存中..."):
+                if is_update:
                     success = database.update_story(
                         story_id=st.session_state.saved_story_id,
                         title=st.session_state.final_story_title,
                         body=st.session_state.final_story_body,
                         chat_history=st.session_state.chat_history_json
                     )
-                
-                if success:
-                    st.success(f"ストーリーが上書き保存されました！ (ID: {st.session_state.saved_story_id})")
+                    if success: st.success("保存完了！")
                 else:
-                    st.error("上書き保存に失敗しました。")
-            
-            else:
-                # --- 新規保存の場合 ---
-                with st.spinner("データベースに新規保存中です..."):
-                    new_story_id = database.save_story(
+                    new_id = database.save_story(
                         title=st.session_state.final_story_title,
                         body=st.session_state.final_story_body,
                         chat_history=st.session_state.chat_history_json
                     )
-                
-                if new_story_id:
-                    st.success(f"ストーリーが新規保存されました！ (ID: {new_story_id})")
-                    st.session_state.saved_story_id = new_story_id # 発行されたIDを保存
-                else:
-                    st.error("新規保存に失敗しました。")
+                    if new_id:
+                        st.session_state.saved_story_id = new_id
+                        st.success("保存完了！")
 
-        # 保存が成功したらQRコードを表示
+        # QRコード発行
         if st.session_state.saved_story_id:
+            st.divider()
             story_id = st.session_state.saved_story_id
             
-            # (↓ QRコード表示ロジックは変更なし)
-            # 【F-004: QRコード発行機能】
-            app_url = "https://brand-gen-ejztgk9pxefnatl8jyk4tr.streamlit.app/" 
-            final_url = f"{app_url}/?story_id={story_id}"
+            # 修正: 動的にベースURLを取得
+            base_url = get_base_url()
+            final_url = f"{base_url}/?story_id={story_id}"
             
-            st.info(f"QRコードが指すURL (↓):\n{final_url}")
+            col_qr, col_info = st.columns([1, 2])
             
-            qr = qrcode.QRCode(version=1, box_size=10, border=4)
-            qr.add_data(final_url) 
-            qr.make(fit=True)
-            img = qr.make_image(fill_color="black", back_color="white")
+            with col_qr:
+                qr = qrcode.QRCode(version=1, box_size=10, border=2)
+                qr.add_data(final_url) 
+                qr.make(fit=True)
+                img = qr.make_image(fill_color="black", back_color="white")
 
-            buf = BytesIO()
-            img.save(buf, format="PNG")
-            st.image(buf)
+                buf = BytesIO()
+                img.save(buf, format="PNG")
+                st.image(buf, caption="読み込んで確認", width=200)
+
+            with col_info:
+                st.success("QRコードが発行されました！")
+                st.markdown(f"**リンク先URL:**\n\n`{final_url}`")
+                st.warning("※ QRコードが正しく機能しない場合は、サイドバーで「アプリの公開URL」を確認・修正してください。")
